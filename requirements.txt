@@ -1,0 +1,5 @@
+streamlit
+pandas
+openpyxl
+gspread # Adicionado para interagir com Google Sheets
+google-auth # Adicionado para autenticação
