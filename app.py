@@ -157,13 +157,10 @@ def hex_with_alpha(hex_color: str, alpha_hex: str = "22"):
     return hex_color
 
 df_dados = carregar_dados()
-if df_dados is not None and not df_dados.empty:
-    st.write("Dados carregados da planilha:")
-    st.dataframe(df_dados.head())
-elif df_dados is not None and df_dados.empty:
-    st.warning("A planilha 'dados' está vazia.")
-else:
+if df_dados is None:
     st.error("Erro ao carregar os dados da planilha.")
+elif df_dados.empty:
+    st.warning("A planilha 'dados' está vazia.")
 
 for nome_condominio, info in condominios.items():
     st.markdown(f"<h3 style='color:{info['cor']}; margin-bottom:6px'>{nome_condominio}</h3>", unsafe_allow_html=True)
