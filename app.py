@@ -1,7 +1,7 @@
 import streamlit as st
 
 # --- BLOQUEIO COM SENHA ---
-SENHA_PADRAO = st.secrets.get("senha", "mooca123")
+SENHA_PADRAO = st.secrets.get("senha", "navona")
 
 # Se o usuário já passou pela senha, guardamos na sessão
 if "autenticado" not in st.session_state:
