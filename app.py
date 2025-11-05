@@ -1,5 +1,19 @@
 import streamlit as st
 import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
+# (outros imports que você já usa...)
+
+# --- SENHA SIMPLES ---
+SENHA_CORRETA = "mooca123"
+
+senha = st.text_input("Digite a senha para acessar o aplicativo:", type="password")
+
+if senha == SENHA_CORRETA:
+    st.success("Acesso liberado ✅")
+
+    import streamlit as st
+import pandas as pd
 import datetime
 import json # Importando a biblioteca json
 from google.oauth2 import service_account # Importando para autenticação
@@ -298,3 +312,9 @@ total = len(todas_torres)
 concluidas = sum(1 for t in todas_torres if sem_consumo.get(t, False) or preenchidas.get(t, False))
 st.progress(concluidas / total if total > 0 else 0)
 st.caption(f"Progresso: {concluidas}/{total} torres concluídas")
+
+elif senha == "":
+    st.info("Digite a senha para continuar 🔒")
+
+else:
+    st.error("Senha incorreta! Tente novamente.")
