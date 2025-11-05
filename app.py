@@ -13,14 +13,17 @@ SHEET_NAME = "dados"
 
 # Função para obter credenciais do Google Cloud
 def get_gcp_credentials():
-    # As credenciais serão salvas como um segredo no Streamlit Sharing
-    # O nome do segredo pode ser 'gcp_service_account_credentials'
+    # Lê o segredo como string
     creds_json = st.secrets["gcp_service_account_credentials"]
+    # Converte a string JSON em dicionário
+    creds_dict = json.loads(creds_json)
+    # Cria as credenciais a partir do dicionário
     creds = service_account.Credentials.from_service_account_info(
-        creds_json,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"] # Escopo para acessar Google Sheets
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     return creds
+
 
 # Função para carregar os dados da planilha Google Sheets
 @st.cache_data(ttl=600) # Cache para não ler a planilha a cada interação (cache de 10 minutos)
