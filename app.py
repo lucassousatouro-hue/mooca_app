@@ -9,22 +9,6 @@ from google.oauth2.service_account import Credentials
 import json
 import streamlit as st
 
-def testar_conexao():
-    creds_json = st.secrets["gcp_service_account_credentials"]
-    creds_dict = json.loads(creds_json)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    
-    # 🔍 Testa acesso
-    st.write("Tentando abrir a planilha...")
-    sheet = client.open_by_key(st.secrets["spreadsheet_id"])
-    st.success("✅ Conseguiu abrir a planilha!")
-    st.write("Aba(s):", [w.title for w in sheet.worksheets()])
-
-testar_conexao()
-
-
 # Caminho da planilha no Google Drive - Agora usaremos a ID da planilha
 # Você precisará obter a ID da sua planilha (é a longa string de letras e números na URL)
 # Exemplo: https://docs.google.com/spreadsheets/d/SUA_PLANILHA_ID_AQUI/edit
