@@ -3,7 +3,6 @@ import streamlit as st
 # --- BLOQUEIO COM SENHA ---
 SENHA_PADRAO = st.secrets.get("senha", "navona")
 
-# Se o usuário já passou pela senha, guardamos na sessão
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
 
@@ -25,7 +24,6 @@ import datetime
 import json
 from google.oauth2 import service_account
 import gspread
-from google.oauth2.service_account import Credentials
 
 # --- CONFIGURAÇÕES INICIAIS ---
 SPREADSHEET_ID = st.secrets["spreadsheet_id"]
@@ -54,14 +52,6 @@ def carregar_dados():
     return df
 
 def salvar_dados(data, dados_torres):
-    """
-    Comportamento solicitado:
-    - Encontra a linha da data selecionada.
-    - Lê a linha inteira uma vez (sheet.row_values).
-    - Se houver qualquer célula preenchida além da coluna Data, NÃO escreve nada e
-      mostra a mensagem: "Erro ao preencher, o dia selecionado já há registro."
-    - Caso contrário, escreve os dados normalmente (batch_update).
-    """
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -76,31 +66,21 @@ def salvar_dados(data, dados_torres):
         st.dataframe(df['Data'].head(10))
         return
 
-    linha_planilha = linha_index[0] + 2  # +2 por causa do cabeçalho (A1 é cabeçalho)
+    linha_planilha = linha_index[0] + 2
 
-    # Lê toda a linha de destino uma única vez
+    # Lê a linha inteira da planilha
     try:
-        linha_valores = sheet.row_values(linha_planilha)  # lista de valores da linha
+        linha_valores = sheet.row_values(linha_planilha)
     except Exception as e:
         st.error(f"Erro ao verificar a planilha: {e}")
         return
 
-    # Se existir qualquer célula preenchida além da primeira (Data), não escreve nada
-    # Observação: linha_valores pode ser curta; tratamos com segurança.
-    tem_conteudo = False
-    if len(linha_valores) > 1:
-        # verifica se existe algum valor não vazio nas colunas depois da data
-        for v in linha_valores[1:]:
-            if str(v).strip() != "":
-                tem_conteudo = True
-                break
-
+    # Se houver qualquer valor preenchido além da data, não escrever nada
+    tem_conteudo = any(str(v).strip() != "" for v in linha_valores[1:])
     if tem_conteudo:
-        # Mensagem solicitada pelo usuário — não escreve nada
         st.error("Erro ao preencher, o dia selecionado já há registro.")
         return
 
-    # Se chegou aqui, pode montar updates e gravar
     col_offset = 1
     updates = []
 
@@ -197,6 +177,7 @@ if df_dados is None:
 elif df_dados.empty:
     st.warning("A planilha 'dados' está vazia.")
 
+# --- FORMULÁRIO ---
 for nome_condominio, info in condominios.items():
     st.markdown(f"<h3 style='color:{info['cor']}; margin-bottom:6px'>{nome_condominio}</h3>", unsafe_allow_html=True)
     cols = st.columns(3)
@@ -213,20 +194,30 @@ for nome_condominio, info in condominios.items():
                     st.session_state["sem_consumo"] = sem_consumo
                     st.rerun()
                 dados_torres[torre] = {"Mpa": "", "Traços": "", "Pavimento": "", "Tipo": ""}
+                preenchidas[torre] = True  # conta como concluída
             else:
                 mpa = st.text_input("Mpa", key=f"mpa_{torre}")
                 tracos = st.text_input("Traços", key=f"tracos_{torre}")
                 pavimento = st.text_input("Pavimento", key=f"pav_{torre}")
                 tipo = st.selectbox("Tipo", ["A Granel", "Ensacada"], key=f"tipo_{torre}")
+
                 if st.button(f"🚫 Sem consumo - {torre}", key=f"semc_{torre}"):
                     sem_consumo[torre] = True
                     st.session_state["sem_consumo"] = sem_consumo
                     st.rerun()
-                preenchidas[torre] = any([mpa, tracos, pavimento])
+
+                # Só conta como preenchida se TODOS os campos obrigatórios estiverem preenchidos
+                if all([mpa.strip(), tracos.strip(), pavimento.strip()]):
+                    preenchidas[torre] = True
+                else:
+                    preenchidas[torre] = False
+
                 st.session_state["preenchidas"] = preenchidas
                 dados_torres[torre] = {"Mpa": mpa, "Traços": tracos, "Pavimento": pavimento, "Tipo": tipo}
+
             st.markdown("</div>", unsafe_allow_html=True)
 
+# --- BOTÕES DE AÇÃO ---
 st.write("---")
 col1, col2 = st.columns(2)
 with col1:
@@ -243,6 +234,7 @@ with col2:
         st.session_state["preenchidas"] = {}
         st.rerun()
 
+# --- BARRA DE PROGRESSO ---
 total = len(todas_torres)
 concluidas = sum(1 for t in todas_torres if sem_consumo.get(t, False) or preenchidas.get(t, False))
 st.progress(concluidas / total if total > 0 else 0)
