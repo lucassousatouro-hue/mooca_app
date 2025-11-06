@@ -21,60 +21,40 @@ def get_gcp_credentials():
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
 
-def carregar_dados():
+@st.cache_data
+def carregar_planilha_completa():
+    """Carrega toda a planilha de uma vez, evitando várias chamadas à API."""
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     dados = sheet.get_all_records()
-    return pd.DataFrame(dados)
-
-# -----------------------------------------------------------
-# FUNÇÃO SEGURA PARA BUSCAR VALOR PADRÃO
-# -----------------------------------------------------------
-def buscar_valor_acima(sheet, coluna, ultima_linha):
-    """
-    Busca o último valor não vazio acima em uma coluna, evitando múltiplas chamadas à API.
-    """
-    try:
-        coluna_valores = sheet.col_values(coluna)
-        for valor in reversed(coluna_valores):
-            if str(valor).strip() != "":
-                return valor
-        return ""
-    except Exception as e:
-        st.warning(f"Erro ao buscar valor padrão: {e}")
-        return ""
+    df = pd.DataFrame(dados)
+    return df, sheet
 
 # -----------------------------------------------------------
 # FUNÇÃO DE SALVAR DADOS
 # -----------------------------------------------------------
-def salvar_dados(data, dados_torres):
-    creds = get_gcp_credentials()
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    df = carregar_dados()
-
+def salvar_dados(sheet, df, data, dados_torres):
     data_formatada = pd.to_datetime(data).date()
     linha_index = df.index[df['Data'] == data_formatada].tolist()
 
     if not linha_index:
         st.warning("⚠️ Data não encontrada na planilha.")
-        st.write("Primeiras datas encontradas:")
-        st.dataframe(df['Data'].head(10))
         return
 
     linha_planilha = linha_index[0] + 2  # +2 por causa do cabeçalho
 
     try:
+        # Verifica se a linha já possui algum dado além da data
         linha_valores = sheet.row_values(linha_planilha)
         if len(linha_valores) > 1 and any(c.strip() for c in linha_valores[1:]):
             st.error("❌ Erro ao preencher: o dia selecionado já possui registros.")
             return
     except Exception as e:
-        st.error(f"Erro ao verificar linha na planilha: {e}")
+        st.error(f"Erro ao verificar linha: {e}")
         return
 
-    # Se chegou aqui, pode salvar normalmente
+    # Monta lista de atualizações
     col_offset = 1
     updates = []
     for torre, valores in dados_torres.items():
@@ -93,7 +73,7 @@ def salvar_dados(data, dados_torres):
     try:
         sheet.batch_update(updates)
         st.success("✅ Dados salvos com sucesso!")
-        carregar_dados.clear()
+        carregar_planilha_completa.clear()
     except Exception as e:
         st.error(f"Erro ao salvar na planilha: {e}")
 
@@ -102,39 +82,35 @@ def salvar_dados(data, dados_torres):
 # -----------------------------------------------------------
 st.title("📊 Controle de Concreto - Mooca")
 
-# Carrega planilha e cliente
-creds = get_gcp_credentials()
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+df, sheet = carregar_planilha_completa()
 
-# Garante que a planilha tem dados
-df = carregar_dados()
 if df.empty:
     st.error("A planilha está vazia ou inacessível.")
     st.stop()
 
-# -----------------------------------------------------------
-# SELEÇÃO DE DATA
-# -----------------------------------------------------------
+# Seleciona data
 data_hoje = datetime.now().date()
 data = st.date_input("📅 Escolha a Data do Registro:", value=data_hoje)
 
-# -----------------------------------------------------------
-# FORMULÁRIO DAS TORRES
-# -----------------------------------------------------------
+# Torres
 torres = ["Torre 1", "Torre 2", "Torre 3", "Torre 4", "Torre 5", "Torre 6", "Torre 7", "Torre 8", "Torre 9"]
 
+# Busca padrões de uma vez só (a partir do DataFrame já carregado)
 padrao_mpa = {}
 padrao_pav = {}
-
-col_offset = 1
 for torre in torres:
-    mpa_col = col_offset + 1
-    pav_col = col_offset + 3
-    padrao_mpa[torre] = buscar_valor_acima(sheet, mpa_col, sheet.row_count)
-    padrao_pav[torre] = buscar_valor_acima(sheet, pav_col, sheet.row_count)
-    col_offset += 4
+    colunas = [col for col in df.columns if torre in col]
+    if len(colunas) >= 3:
+        mpa_col = colunas[0]
+        pav_col = colunas[2]
 
+        padrao_mpa[torre] = next((v for v in reversed(df[mpa_col].tolist()) if str(v).strip()), "")
+        padrao_pav[torre] = next((v for v in reversed(df[pav_col].tolist()) if str(v).strip()), "")
+    else:
+        padrao_mpa[torre] = ""
+        padrao_pav[torre] = ""
+
+# Formulário
 dados_torres = {}
 progresso = 0
 sem_consumo = {}
@@ -152,18 +128,14 @@ for torre in torres:
 
         dados_torres[torre] = {"Mpa": mpa, "Traços": tracos, "Pavimento": pav, "Tipo": tipo}
 
-# -----------------------------------------------------------
-# BARRA DE PROGRESSO
-# -----------------------------------------------------------
+# Barra de progresso
 st.progress(progresso / len(torres))
 
-# -----------------------------------------------------------
-# BOTÕES DE AÇÃO
-# -----------------------------------------------------------
+# Botões
 col1, col2 = st.columns(2)
 with col1:
     if st.button("💾 Salvar Dados"):
-        salvar_dados(data, dados_torres)
+        salvar_dados(sheet, df, data, dados_torres)
 with col2:
     if st.button("🔄 Atualizar Página (Novo Registro)"):
         st.experimental_rerun()
