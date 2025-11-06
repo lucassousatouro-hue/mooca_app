@@ -49,29 +49,21 @@ def carregar_dados():
         pass
     return df
 
-# --- Função auxiliar (corrigida): pegar último valor preenchido acima usando col_values ---
-def buscar_valor_acima(sheet, coluna):
-    """
-    Retorna o último valor não vazio na coluna (coluna é 1-based).
-    Usa sheet.col_values para reduzir chamadas na API.
-    """
-    try:
-        # gspread.col_values espera coluna 1-based
-        valores = sheet.col_values(coluna)
-    except Exception:
-        return ""
-    # percorre de trás pra frente buscando primeiro valor não vazio
-    for v in reversed(valores):
-        if v is not None and str(v).strip() != "":
-            return v
+# --- FUNÇÃO PARA PEGAR O ÚLTIMO VALOR ACIMA ---
+def buscar_valor_acima(sheet, coluna, linha_inicial):
+    for i in range(linha_inicial - 1, 0, -1):
+        valor = sheet.cell(i, coluna).value
+        if valor:
+            return valor
     return ""
 
-# --- SALVAR DADOS COM VERIFICAÇÃO DE SOBRESCRITA ---
+# --- FUNÇÃO DE SALVAR DADOS ---
 def salvar_dados(data, dados_torres):
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     df = carregar_dados()
+
     data_formatada = pd.to_datetime(data).date()
     linha_index = df.index[df['Data'] == data_formatada].tolist()
 
@@ -81,52 +73,42 @@ def salvar_dados(data, dados_torres):
         st.dataframe(df['Data'].head(10))
         return
 
-    linha_planilha = linha_index[0] + 2
-    col_offset = 1
-    updates = []
-
-    # todas_torres precisa ser coerente com a ordem usada no formulário
-    todas_torres = [t for info in condominios.values() for t in info["torres"]]
-
-    for tower_idx, torre in enumerate(todas_torres):
-        valores = dados_torres.get(torre, {"Mpa": "", "Traços": "", "Pavimento": "", "Tipo": ""})
-        mpa_col = 2 + 4 * tower_idx      # coluna mpa conforme lógica anterior
-        tracos_col = 3 + 4 * tower_idx
-        pav_col = 4 + 4 * tower_idx
-        tipo_col = 5 + 4 * tower_idx
-
-        # --- Verifica sobrescrita ---
-        try:
-            celulas = {
-                "MPA": sheet.cell(linha_planilha, mpa_col).value,
-                "Traços": sheet.cell(linha_planilha, tracos_col).value,
-                "Pavimento": sheet.cell(linha_planilha, pav_col).value,
-                "Tipo": sheet.cell(linha_planilha, tipo_col).value
-            }
-        except Exception as e:
-            st.error(f"Erro ao verificar células na planilha para '{torre}': {e}")
-            continue
-
-        if any(celulas.values()):
-            st.warning(f"⚠️ Torre '{torre}' já possui dados preenchidos! Nenhum dado foi sobrescrito para essa torre.")
-        else:
-            updates.append({'range': sheet.cell(linha_planilha, mpa_col).address, 'values': [[valores.get('Mpa', '')]]})
-            updates.append({'range': sheet.cell(linha_planilha, tracos_col).address, 'values': [[valores.get('Traços', '')]]})
-            updates.append({'range': sheet.cell(linha_planilha, pav_col).address, 'values': [[valores.get('Pavimento', '')]]})
-            updates.append({'range': sheet.cell(linha_planilha, tipo_col).address, 'values': [[valores.get('Tipo', 'A Granel')]]})
+    linha_planilha = linha_index[0] + 2  # +2 por causa do cabeçalho
 
     try:
-        if updates:
-            sheet.batch_update(updates)
-            st.success("✅ Dados salvos com sucesso!")
-            carregar_dados.clear()
-        else:
-            st.info("Nenhuma atualização necessária (todas as células destino já têm conteúdo).")
+        linha_valores = sheet.row_values(linha_planilha)
+        if len(linha_valores) > 1 and any(c.strip() for c in linha_valores[1:]):
+            st.error("❌ Erro ao preencher: o dia selecionado já possui registros.")
+            return
+    except Exception as e:
+        st.error(f"Erro ao verificar linha na planilha: {e}")
+        return
+
+    col_offset = 1
+    updates = []
+    for torre, valores in dados_torres.items():
+        mpa_col = col_offset + 1
+        tracos_col = col_offset + 2
+        pav_col = col_offset + 3
+        tipo_col = col_offset + 4
+
+        updates.append({'range': sheet.cell(linha_planilha, mpa_col).address, 'values': [[valores.get('Mpa', '')]]})
+        updates.append({'range': sheet.cell(linha_planilha, tracos_col).address, 'values': [[valores.get('Traços', '')]]})
+        updates.append({'range': sheet.cell(linha_planilha, pav_col).address, 'values': [[valores.get('Pavimento', '')]]})
+        updates.append({'range': sheet.cell(linha_planilha, tipo_col).address, 'values': [[valores.get('Tipo', 'A Granel')]]})
+
+        col_offset += 4
+
+    try:
+        sheet.batch_update(updates)
+        st.success("✅ Dados salvos com sucesso!")
+        carregar_dados.clear()
     except Exception as e:
         st.error(f"Erro ao salvar na planilha: {e}")
 
 # --- INTERFACE ---
 st.set_page_config(page_title="App Mooca", layout="wide")
+
 st.markdown('<img src="https://rtsargamassas.com.br/wp-content/uploads/2023/03/rts_logo.png" class="logo-img">', unsafe_allow_html=True)
 st.header("Obra Mooca")
 st.title("Controle de Traços de Argamassa")
@@ -141,6 +123,9 @@ st.markdown("""
     }
     .form-block .stTextInput > div > div > input {
         background-color: white !important;
+        color: black !important;
+    }
+    .form-block .stMarkdown p {
         color: black !important;
     }
     .form-block .stSelectbox > div > div > button {
@@ -172,27 +157,11 @@ if "sem_consumo" not in st.session_state:
     st.session_state["sem_consumo"] = {}
 if "preenchidas" not in st.session_state:
     st.session_state["preenchidas"] = {}
-if "padrao_mpa" not in st.session_state:
-    st.session_state["padrao_mpa"] = {}
-if "padrao_pav" not in st.session_state:
-    st.session_state["padrao_pav"] = {}
 
 sem_consumo = st.session_state["sem_consumo"]
 preenchidas = st.session_state["preenchidas"]
-padrao_mpa = st.session_state["padrao_mpa"]
-padrao_pav = st.session_state["padrao_pav"]
-
-creds = get_gcp_credentials()
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-
-df_dados = carregar_dados()
-if df_dados is None:
-    st.error("Erro ao carregar os dados da planilha.")
-elif df_dados.empty:
-    st.warning("A planilha 'dados' está vazia.")
-
 dados_torres = {}
+
 todas_torres = [t for info in condominios.values() for t in info["torres"]]
 
 def hex_with_alpha(hex_color: str, alpha_hex: str = "22"):
@@ -201,7 +170,26 @@ def hex_with_alpha(hex_color: str, alpha_hex: str = "22"):
         return f"#{hex_clean}{alpha_hex}"
     return hex_color
 
-# --- BLOCO PRINCIPAL DE FORMULÁRIOS ---
+# --- Carregar dados e valores padrão ---
+df_dados = carregar_dados()
+if df_dados is None:
+    st.error("Erro ao carregar os dados da planilha.")
+elif df_dados.empty:
+    st.warning("A planilha 'dados' está vazia.")
+
+creds = get_gcp_credentials()
+client = gspread.authorize(creds)
+sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+
+padrao_mpa = {}
+padrao_pav = {}
+for i, torre in enumerate(todas_torres):
+    mpa_col = 2 + i * 4
+    pav_col = 4 + i * 4
+    padrao_mpa[torre] = buscar_valor_acima(sheet, mpa_col, sheet.row_count)
+    padrao_pav[torre] = buscar_valor_acima(sheet, pav_col, sheet.row_count)
+
+# --- FORMULÁRIO ---
 for nome_condominio, info in condominios.items():
     st.markdown(f"<h3 style='color:{info['cor']}; margin-bottom:6px'>{nome_condominio}</h3>", unsafe_allow_html=True)
     cols = st.columns(3)
@@ -211,25 +199,6 @@ for nome_condominio, info in condominios.items():
             st.markdown(f"<div class='form-block' style='background:{bg_color}; border:2px solid {info['cor']};'>", unsafe_allow_html=True)
             st.markdown(f"**{torre}**", unsafe_allow_html=True)
 
-            # calculamos coluna com base no índice global da torre
-            try:
-                idx_global = todas_torres.index(torre)
-            except ValueError:
-                idx_global = None
-
-            if idx_global is not None:
-                mpa_col_global = 2 + 4 * idx_global   # coluna do MPA para essa torre
-                pav_col_global = 4 + 4 * idx_global   # coluna do Pavimento para essa torre
-            else:
-                mpa_col_global = None
-                pav_col_global = None
-
-            # busca o padrao apenas se ainda não definido e se conseguimos mapear a coluna
-            if torre not in padrao_mpa and mpa_col_global:
-                padrao_mpa[torre] = buscar_valor_acima(sheet, mpa_col_global)
-            if torre not in padrao_pav and pav_col_global:
-                padrao_pav[torre] = buscar_valor_acima(sheet, pav_col_global)
-
             if sem_consumo.get(torre, False):
                 st.info("🚫 Torre marcada como 'Sem consumo'.")
                 if st.button(f"Desfazer - {torre}", key=f"desf_{torre}"):
@@ -238,45 +207,37 @@ for nome_condominio, info in condominios.items():
                     st.rerun()
                 dados_torres[torre] = {"Mpa": "", "Traços": "", "Pavimento": "", "Tipo": ""}
             else:
-                mpa = st.text_input("Mpa", key=f"mpa_{torre}", value=padrao_mpa.get(torre, ""))
+                mpa = st.text_input("Mpa", value=padrao_mpa.get(torre, ""), key=f"mpa_{torre}")
                 tracos = st.text_input("Traços", key=f"tracos_{torre}")
-                pavimento = st.text_input("Pavimento", key=f"pav_{torre}", value=padrao_pav.get(torre, ""))
+                pavimento = st.text_input("Pavimento", value=padrao_pav.get(torre, ""), key=f"pav_{torre}")
                 tipo = st.selectbox("Tipo", ["A Granel", "Ensacada"], key=f"tipo_{torre}")
-
                 if st.button(f"🚫 Sem consumo - {torre}", key=f"semc_{torre}"):
                     sem_consumo[torre] = True
                     st.session_state["sem_consumo"] = sem_consumo
                     st.rerun()
-
-                preenchidas[torre] = all([mpa, tracos, pavimento])
+                preenchidas[torre] = bool(mpa and tracos and pavimento)
                 st.session_state["preenchidas"] = preenchidas
                 dados_torres[torre] = {"Mpa": mpa, "Traços": tracos, "Pavimento": pavimento, "Tipo": tipo}
             st.markdown("</div>", unsafe_allow_html=True)
 
 st.write("---")
 col1, col2 = st.columns(2)
-
 with col1:
     if st.button("💾 Salvar Dados"):
         salvar_dados(data, dados_torres)
-
 with col2:
     if st.button("🔄 Atualizar Página (Novo Registro)"):
         for torre in todas_torres:
-            for prefix in ("mpa_", "tracos_", "pav_", "tipo_"):
+            for prefix in ("tracos_", "tipo_"):  # mantém MPA e Pavimento
                 key = f"{prefix}{torre}"
                 if key in st.session_state:
                     del st.session_state[key]
-        # mantemos os padrões definidos (padrao_mpa / padrao_pav) para reaparecer
         st.session_state["sem_consumo"] = {}
         st.session_state["preenchidas"] = {}
         st.rerun()
 
-# --- BARRA DE PROGRESSO ---
+# --- Barra de progresso ---
 total = len(todas_torres)
-concluidas = sum(
-    1 for t in todas_torres
-    if sem_consumo.get(t, False) or preenchidas.get(t, False)
-)
+concluidas = sum(1 for t in todas_torres if sem_consumo.get(t, False) or preenchidas.get(t, False))
 st.progress(concluidas / total if total > 0 else 0)
 st.caption(f"Progresso: {concluidas}/{total} torres concluídas")
