@@ -49,12 +49,21 @@ def carregar_dados():
         pass
     return df
 
-# --- Função auxiliar: pegar último valor preenchido acima ---
-def buscar_valor_acima(sheet, coluna, ultima_linha):
-    for i in range(ultima_linha - 1, 0, -1):
-        valor = sheet.cell(i, coluna).value
-        if valor not in (None, "", " "):
-            return valor
+# --- Função auxiliar (corrigida): pegar último valor preenchido acima usando col_values ---
+def buscar_valor_acima(sheet, coluna):
+    """
+    Retorna o último valor não vazio na coluna (coluna é 1-based).
+    Usa sheet.col_values para reduzir chamadas na API.
+    """
+    try:
+        # gspread.col_values espera coluna 1-based
+        valores = sheet.col_values(coluna)
+    except Exception:
+        return ""
+    # percorre de trás pra frente buscando primeiro valor não vazio
+    for v in reversed(valores):
+        if v is not None and str(v).strip() != "":
+            return v
     return ""
 
 # --- SALVAR DADOS COM VERIFICAÇÃO DE SOBRESCRITA ---
@@ -76,29 +85,35 @@ def salvar_dados(data, dados_torres):
     col_offset = 1
     updates = []
 
-    for torre, valores in dados_torres.items():
-        mpa_col = col_offset + 1
-        tracos_col = col_offset + 2
-        pav_col = col_offset + 3
-        tipo_col = col_offset + 4
+    # todas_torres precisa ser coerente com a ordem usada no formulário
+    todas_torres = [t for info in condominios.values() for t in info["torres"]]
+
+    for tower_idx, torre in enumerate(todas_torres):
+        valores = dados_torres.get(torre, {"Mpa": "", "Traços": "", "Pavimento": "", "Tipo": ""})
+        mpa_col = 2 + 4 * tower_idx      # coluna mpa conforme lógica anterior
+        tracos_col = 3 + 4 * tower_idx
+        pav_col = 4 + 4 * tower_idx
+        tipo_col = 5 + 4 * tower_idx
 
         # --- Verifica sobrescrita ---
-        celulas = {
-            "MPA": sheet.cell(linha_planilha, mpa_col).value,
-            "Traços": sheet.cell(linha_planilha, tracos_col).value,
-            "Pavimento": sheet.cell(linha_planilha, pav_col).value,
-            "Tipo": sheet.cell(linha_planilha, tipo_col).value
-        }
+        try:
+            celulas = {
+                "MPA": sheet.cell(linha_planilha, mpa_col).value,
+                "Traços": sheet.cell(linha_planilha, tracos_col).value,
+                "Pavimento": sheet.cell(linha_planilha, pav_col).value,
+                "Tipo": sheet.cell(linha_planilha, tipo_col).value
+            }
+        except Exception as e:
+            st.error(f"Erro ao verificar células na planilha para '{torre}': {e}")
+            continue
 
         if any(celulas.values()):
-            st.warning(f"⚠️ Torre '{torre}' já possui dados preenchidos! Nenhum dado foi sobrescrito.")
+            st.warning(f"⚠️ Torre '{torre}' já possui dados preenchidos! Nenhum dado foi sobrescrito para essa torre.")
         else:
             updates.append({'range': sheet.cell(linha_planilha, mpa_col).address, 'values': [[valores.get('Mpa', '')]]})
             updates.append({'range': sheet.cell(linha_planilha, tracos_col).address, 'values': [[valores.get('Traços', '')]]})
             updates.append({'range': sheet.cell(linha_planilha, pav_col).address, 'values': [[valores.get('Pavimento', '')]]})
             updates.append({'range': sheet.cell(linha_planilha, tipo_col).address, 'values': [[valores.get('Tipo', 'A Granel')]]})
-
-        col_offset += 4
 
     try:
         if updates:
@@ -106,7 +121,7 @@ def salvar_dados(data, dados_torres):
             st.success("✅ Dados salvos com sucesso!")
             carregar_dados.clear()
         else:
-            st.info("Nenhuma célula nova para atualizar.")
+            st.info("Nenhuma atualização necessária (todas as células destino já têm conteúdo).")
     except Exception as e:
         st.error(f"Erro ao salvar na planilha: {e}")
 
@@ -196,10 +211,24 @@ for nome_condominio, info in condominios.items():
             st.markdown(f"<div class='form-block' style='background:{bg_color}; border:2px solid {info['cor']};'>", unsafe_allow_html=True)
             st.markdown(f"**{torre}**", unsafe_allow_html=True)
 
-            if torre not in padrao_mpa:
-                padrao_mpa[torre] = buscar_valor_acima(sheet, 2 + i * 4, sheet.row_count)
-            if torre not in padrao_pav:
-                padrao_pav[torre] = buscar_valor_acima(sheet, 4 + i * 4, sheet.row_count)
+            # calculamos coluna com base no índice global da torre
+            try:
+                idx_global = todas_torres.index(torre)
+            except ValueError:
+                idx_global = None
+
+            if idx_global is not None:
+                mpa_col_global = 2 + 4 * idx_global   # coluna do MPA para essa torre
+                pav_col_global = 4 + 4 * idx_global   # coluna do Pavimento para essa torre
+            else:
+                mpa_col_global = None
+                pav_col_global = None
+
+            # busca o padrao apenas se ainda não definido e se conseguimos mapear a coluna
+            if torre not in padrao_mpa and mpa_col_global:
+                padrao_mpa[torre] = buscar_valor_acima(sheet, mpa_col_global)
+            if torre not in padrao_pav and pav_col_global:
+                padrao_pav[torre] = buscar_valor_acima(sheet, pav_col_global)
 
             if sem_consumo.get(torre, False):
                 st.info("🚫 Torre marcada como 'Sem consumo'.")
@@ -238,6 +267,7 @@ with col2:
                 key = f"{prefix}{torre}"
                 if key in st.session_state:
                     del st.session_state[key]
+        # mantemos os padrões definidos (padrao_mpa / padrao_pav) para reaparecer
         st.session_state["sem_consumo"] = {}
         st.session_state["preenchidas"] = {}
         st.rerun()
