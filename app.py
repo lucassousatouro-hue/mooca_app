@@ -40,9 +40,6 @@ def get_gcp_credentials():
 
 @st.cache_data(ttl=600)
 def carregar_dados():
-    """
-    Retorna DataFrame com os registros (usa header da planilha).
-    """
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -56,64 +53,51 @@ def carregar_dados():
 
 @st.cache_data(ttl=600)
 def obter_ultimos_valores():
-    """
-    Retorna um dict { torre: { 'MPA': ultimo_valor, 'Pavimento': ultimo_valor } }
-    Varre a planilha (get_all_values) e para cada coluna correspondente a MPA/Pavimento
-    busca de baixo para cima o primeiro valor não vazio.
-    """
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    all_values = sheet.get_all_values()  # lista de listas (linhas)
-    # Se a planilha estiver vazia ou com só cabeçalho, retorna dicts vazios
+    all_values = sheet.get_all_values()
+
     if not all_values or len(all_values) == 0:
         return {}
 
-    # Configuração das torres - deve bater com a mesma ordem usada abaixo no UI
     condominios_local = {
         "San Pietro": {"torres": ["San Pietro T1", "San Pietro T2", "San Pietro T3"], "cor": "#1E90FF"},
         "Navona": {"torres": ["Navona T1", "Navona T2", "Navona T3"], "cor": "#FFA500"},
         "Duomo": {"torres": ["Duomo T1", "Duomo T2", "Duomo T3"], "cor": "#FFD700"},
         "Veneza": {"torres": ["Veneza T1", "Veneza T2", "Veneza T3"], "cor": "#BA55D3"},
     }
-    todas_torres_local = [t for info in condominios_local.values() for t in info["torres"]]
 
+    todas_torres_local = [t for info in condominios_local.values() for t in info["torres"]]
     resultados = {}
-    # A lógica de colunas segue a do salvar_dados:
-    # primeira coluna = Data (col 1)
-    # para cada torre: col_offset inicia em 1
-    # mpa_col = col_offset + 1, tracos = +2, pav = +3, tipo = +4
+
     col_offset = 1
     n_linhas = len(all_values)
-    # iteramos torre a torre
-    for torre in todas_torres_local:
-        mpa_col = col_offset + 1   # 1-indexed
-        pav_col = col_offset + 3   # 1-indexed
 
-        # Procurar de baixo para cima (ignorando linha 0 que normalmente é o header)
+    for torre in todas_torres_local:
+        mpa_col = col_offset + 1
+        pav_col = col_offset + 3
+
         ultimo_mpa = ""
         ultimo_pav = ""
 
-        # percorre as linhas de baixo pra cima, pulando a primeira linha (header)
         for r in range(n_linhas - 1, 0, -1):
             row = all_values[r]
-            # MPA (verificar se a coluna existe na linha)
+
             try:
                 val_mpa = row[mpa_col - 1].strip()
-            except IndexError:
+            except:
                 val_mpa = ""
             if not ultimo_mpa and val_mpa:
                 ultimo_mpa = val_mpa
 
-            # Pavimento
             try:
                 val_pav = row[pav_col - 1].strip()
-            except IndexError:
+            except:
                 val_pav = ""
             if not ultimo_pav and val_pav:
                 ultimo_pav = val_pav
 
-            # se já encontramos ambos, podemos parar
             if ultimo_mpa and ultimo_pav:
                 break
 
@@ -139,16 +123,13 @@ def salvar_dados(data, dados_torres):
 
     linha_planilha = linha_index[0] + 2
 
-    # Lê a linha inteira da planilha
     try:
         linha_valores = sheet.row_values(linha_planilha)
     except Exception as e:
         st.error(f"Erro ao verificar a planilha: {e}")
         return
 
-    # Se houver qualquer valor preenchido além da data, não escrever nada
-    tem_conteudo = any(str(v).strip() != "" for v in linha_valores[1:])
-    if tem_conteudo:
+    if any(str(v).strip() != "" for v in linha_valores[1:]):
         st.error("Erro ao preencher, o dia selecionado já há registro.")
         return
 
@@ -172,7 +153,6 @@ def salvar_dados(data, dados_torres):
         if updates:
             sheet.batch_update(updates)
             st.success("✅ Dados salvos com sucesso!")
-            # Limpa caches para que os defaults atualizem após o novo registro
             carregar_dados.clear()
             obter_ultimos_valores.clear()
         else:
@@ -180,7 +160,8 @@ def salvar_dados(data, dados_torres):
     except Exception as e:
         st.error(f"Erro ao salvar na planilha: {e}")
 
-# --- INTERFACE ---
+
+# -------- INTERFACE --------
 st.set_page_config(page_title="App Mooca", layout="wide")
 
 st.markdown('<img src="https://rtsargamassas.com.br/wp-content/uploads/2023/03/rts_logo.png" class="logo-img">', unsafe_allow_html=True)
@@ -250,13 +231,11 @@ if df_dados is None:
 elif df_dados.empty:
     st.warning("A planilha 'dados' está vazia.")
 
-# Obter defaults (últimos valores) para MPA e Pavimento
 try:
     defaults_por_torre = obter_ultimos_valores()
 except Exception:
     defaults_por_torre = {}
 
-# --- FORMULÁRIO ---
 for nome_condominio, info in condominios.items():
     st.markdown(f"<h3 style='color:{info['cor']}; margin-bottom:6px'>{nome_condominio}</h3>", unsafe_allow_html=True)
     cols = st.columns(3)
@@ -266,34 +245,27 @@ for nome_condominio, info in condominios.items():
             st.markdown(f"<div class='form-block' style='background:{bg_color}; border:2px solid {info['cor']};'>", unsafe_allow_html=True)
             st.markdown(f"**{torre}**", unsafe_allow_html=True)
 
-            # Se o usuário marcou como 'Sem consumo'
             if sem_consumo.get(torre, False):
                 st.info("🚫 Torre marcada como 'Sem consumo'.")
                 if st.button(f"Desfazer - {torre}", key=f"desf_{torre}"):
                     sem_consumo[torre] = False
                     st.session_state["sem_consumo"] = sem_consumo
                     st.rerun()
-                # mantém vazios para salvar (como antes)
+
                 dados_torres[torre] = {"Mpa": "", "Traços": "", "Pavimento": "", "Tipo": ""}
-                preenchidas[torre] = True  # conta como concluída
+                preenchidas[torre] = True
+
             else:
-                # Pegando defaults calculados (MPA e Pavimento)
                 default_mpa = ""
                 default_pav = ""
+
                 if torre in defaults_por_torre:
                     default_mpa = defaults_por_torre[torre].get('MPA', '') or ""
                     default_pav = defaults_por_torre[torre].get('Pavimento', '') or ""
 
-                # MPA com valor default (último não vazio)
                 mpa = st.text_input("Mpa", key=f"mpa_{torre}", value=str(default_mpa))
-
-                # Traços sempre vazio (como solicitado)
                 tracos = st.text_input("Traços", key=f"tracos_{torre}", value="")
-
-                # Pavimento com default (último não vazio)
                 pavimento = st.text_input("Pavimento", key=f"pav_{torre}", value=str(default_pav))
-
-                # Tipo sempre "A Granel" por padrão
                 tipo = st.selectbox("Tipo", ["A Granel", "Ensacada"], index=0, key=f"tipo_{torre}")
 
                 if st.button(f"🚫 Sem consumo - {torre}", key=f"semc_{torre}"):
@@ -301,7 +273,6 @@ for nome_condominio, info in condominios.items():
                     st.session_state["sem_consumo"] = sem_consumo
                     st.rerun()
 
-                # Só conta como preenchida se TODOS os campos obrigatórios estiverem preenchidos
                 if all([mpa.strip(), tracos.strip(), pavimento.strip()]):
                     preenchidas[torre] = True
                 else:
@@ -315,25 +286,28 @@ for nome_condominio, info in condominios.items():
 # --- BOTÕES DE AÇÃO ---
 st.write("---")
 col1, col2 = st.columns(2)
+
 with col1:
     if st.button("💾 Salvar Dados"):
         salvar_dados(data, dados_torres)
+
 with col2:
     if st.button("🔄 Atualizar Página (Novo Registro)"):
-        # Limpa TUDO do session_state
-        for key in list(st.session_state.keys()):
+
+        # --- LIMPA COMPLETAMENTE A SESSÃO ---
+        keys = list(st.session_state.keys())
+        for key in keys:
             del st.session_state[key]
 
-        # Limpa caches para garantir que defaults atualizem
+        # --- LIMPA CACHE PARA GARANTIR RELOAD REAL ---
         try:
             carregar_dados.clear()
             obter_ultimos_valores.clear()
-        except Exception:
+        except:
             pass
 
-        # Recarrega de verdade (igual F5)
-        st.experimental_rerun()
-
+        # --- F5 REAL ---
+        st.rerun()
 
 # --- BARRA DE PROGRESSO ---
 total = len(todas_torres)
