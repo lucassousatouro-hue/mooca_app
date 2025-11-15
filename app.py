@@ -275,7 +275,6 @@ def salvar_tudo(data, dados_torres, materiais):
 
     # preparar updates para aba 'dados_materiais' (colunas 2..8 conforme combinado)
     updates_mat = []
-    # ordens exatas das colunas (conforme sua confirmação)
     materiais_ordem = [
         "Areia Média (Carga)",
         "Areia Fina (Carga)",
@@ -354,16 +353,7 @@ condominios = {
     "Veneza": {"torres": ["Veneza T1", "Veneza T2", "Veneza T3"], "cor": "#BA55D3"},
 }
 
-if "sem_consumo" not in st.session_state:
-    st.session_state["sem_consumo"] = {}
-if "preenchidas" not in st.session_state():
-    st.session_state["preenchidas"] = {}
-
-# NOTE: some older Streamlit versions might error on st.session_state() call,
-# ensure above line is correct in your environment. If issue appears, change to:
-# if "preenchidas" not in st.session_state: st.session_state["preenchidas"] = {}
-
-# to be robust, we'll ensure keys exist:
+# inicializa chaves de sessão de forma segura (apenas uma vez)
 if "sem_consumo" not in st.session_state:
     st.session_state["sem_consumo"] = {}
 if "preenchidas" not in st.session_state:
@@ -496,3 +486,4 @@ total = len(todas_torres)
 concluidas = sum(1 for t in todas_torres if sem_consumo.get(t, False) or preenchidas.get(t, False))
 st.progress(concluidas / total if total > 0 else 0)
 st.caption(f"Progresso: {concluidas}/{total} torres concluídas")
+
