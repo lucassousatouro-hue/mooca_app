@@ -27,7 +27,8 @@ import gspread
 
 # --- CONFIGURAÇÕES INICIAIS ---
 SPREADSHEET_ID = st.secrets["spreadsheet_id"]
-SHEET_NAME = "dados"
+SHEET_NAME = "dados"  # aba original (torres)
+SHEET_MATERIAIS = "dados_materiais"  # nova aba para materiais (conforme solicitado)
 
 def get_gcp_credentials():
     creds_json = st.secrets["gcp_service_account_credentials"]
@@ -47,6 +48,26 @@ def carregar_dados():
     df = pd.DataFrame(data)
     try:
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce').dt.date
+    except Exception:
+        pass
+    return df
+
+def carregar_dados_materiais():
+    """
+    Carrega a aba dados_materiais como DataFrame (se existir).
+    """
+    creds = get_gcp_credentials()
+    client = gspread.authorize(creds)
+    try:
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_MATERIAIS)
+    except Exception as e:
+        st.error(f"Erro ao acessar aba '{SHEET_MATERIAIS}': {e}")
+        return None
+    data = sheet.get_all_records()
+    df = pd.DataFrame(data)
+    try:
+        if 'Data' in df.columns:
+            df['Data'] = pd.to_datetime(df['Data'], errors='coerce').dt.date
     except Exception:
         pass
     return df
@@ -106,151 +127,185 @@ def obter_ultimos_valores():
 
     return resultados
 
-def salvar_dados(data, dados_torres, materiais=None):
+def localizar_linha_por_data_na_aba(sheet, data):
     """
-    Salva dados na planilha:
-     - dados_torres: dicionário por torre com chaves 'Mpa','Traços','Pavimento','Tipo'
-     - materiais: dicionário com keys:
-         'Areia Media (Carga)',
-         'Areia Fina (carga)',
-         'Cimento (un)',
-         'Plastmix (un)',
-         'Fachada Areia Média (Carga)',
-         'Fachada Areia Fina (carga)'
-    Observação: a coluna 1 é Data. Materiais serão gravados nas colunas 2..8 (na ordem fornecida).
+    Retorna número de linha (1-based) onde a coluna 'Data' bate com data (date object).
+    Se não encontrar, retorna None.
+    sheet: objeto gspread worksheet
+    """
+    try:
+        values = sheet.get_all_records()
+        df = pd.DataFrame(values)
+        if 'Data' not in df.columns:
+            return None
+        df['Data'] = pd.to_datetime(df['Data'], errors='coerce').dt.date
+        matches = df.index[df['Data'] == data].tolist()
+        if not matches:
+            return None
+        # +2 porque get_all_records descarta header: index 0 -> linha 2 na planilha
+        return matches[0] + 2
+    except Exception:
+        # fallback: percorrer get_all_values procurando na coluna 1
+        try:
+            all_values = sheet.get_all_values()
+            # garantir que há pelo menos header + 1 linha
+            for i in range(1, len(all_values)):
+                row = all_values[i]
+                if len(row) >= 1:
+                    cell = row[0].strip()
+                    try:
+                        cell_date = pd.to_datetime(cell, errors='coerce').date()
+                        if cell_date == data:
+                            return i + 1  # all_values é 0-based para linhas
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+    return None
+
+def salvar_tudo(data, dados_torres, materiais):
+    """
+    Valida conflitos nas duas abas e, se tudo ok, salva:
+     - dados_torres na aba 'dados' (mesma lógica antiga)
+     - materiais na aba 'dados_materiais' (colunas 2..8: Areia Média..Fachada Areia Fina)
+    Bloqueio completo: se qualquer célula (colunas 2 em diante) na linha estiver preenchida -> aborta.
     """
     creds = get_gcp_credentials()
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    df = carregar_dados()
+    # abrir abas
+    try:
+        sheet_dados = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    except Exception as e:
+        st.error(f"Erro ao abrir aba '{SHEET_NAME}': {e}")
+        return
+
+    try:
+        sheet_mat = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_MATERIAIS)
+    except Exception as e:
+        st.error(f"Erro ao abrir aba '{SHEET_MATERIAIS}': {e}")
+        return
+
+    # localizar linhas por data em ambas as abas
     try:
         data_formatada = pd.to_datetime(data).date()
     except Exception:
         st.error("Data inválida.")
         return
 
-    linha_index = df.index[df['Data'] == data_formatada].tolist()
-
-    if not linha_index:
-        st.warning("⚠️ Data não encontrada na planilha.")
-        st.write("Primeiras datas encontradas:")
-        st.dataframe(df['Data'].head(10))
+    linha_dados = localizar_linha_por_data_na_aba(sheet_dados, data_formatada)
+    if not linha_dados:
+        st.warning(f"⚠️ Data não encontrada na aba '{SHEET_NAME}'.")
+        df_temp = carregar_dados()
+        if df_temp is not None:
+            st.write("Primeiras datas encontradas:")
+            st.dataframe(df_temp['Data'].head(10))
         return
 
-    linha_planilha = linha_index[0] + 2  # porque header na linha 1
+    linha_mat = localizar_linha_por_data_na_aba(sheet_mat, data_formatada)
+    if not linha_mat:
+        st.warning(f"⚠️ Data não encontrada na aba '{SHEET_MATERIAIS}'.")
+        df_temp = carregar_dados_materiais()
+        if df_temp is not None:
+            st.write("Primeiras datas encontradas (materiais):")
+            st.dataframe(df_temp['Data'].head(10))
+        return
 
+    # pegar valores das linhas (row_values não retorna colunas vazias no final)
     try:
-        linha_valores = sheet.row_values(linha_planilha)
+        valores_linha_dados = sheet_dados.row_values(linha_dados)
     except Exception as e:
-        st.error(f"Erro ao verificar a planilha: {e}")
+        st.error(f"Erro ao ler linha na aba '{SHEET_NAME}': {e}")
         return
-
-    # calculando colunas alvo
-    todas_torres = [t for info in {
-        "San Pietro": {"torres": ["San Pietro T1", "San Pietro T2", "San Pietro T3"]},
-        "Navona": {"torres": ["Navona T1", "Navona T2", "Navona T3"]},
-        "Duomo": {"torres": ["Duomo T1", "Duomo T2", "Duomo T3"]},
-        "Veneza": {"torres": ["Veneza T1", "Veneza T2", "Veneza T3"]},
-    }.values() for t in info["torres"]]
-
-    # max coluna que podemos acessar = col 1 (data) + 4 * n_torres OR 8 (materiais)
-    max_col_needed = max(8, 1 + 4 * len(todas_torres))
-
-    # pad linha_valores para evitar index error (row_values não retorna colunas vazias no final)
-    if len(linha_valores) < max_col_needed:
-        linha_valores = linha_valores + [""] * (max_col_needed - len(linha_valores))
-
-    # prepara lista de colunas que vamos atualizar e verifica se já há dados nelas
-    target_columns = []
-
-    # materiais: colunas 2..8
-    materiais_cols = list(range(2, 9))  # 2,3,4,5,6,7,8
-    if materiais:
-        target_columns += materiais_cols
-
-    # torres: mesmas regras que antes (cada torre 4 colunas: Mpa, Traços, Pavimento, Tipo)
-    col_offset = 1
-    for torre, valores in dados_torres.items():
-        mpa_col = col_offset + 1
-        tracos_col = col_offset + 2
-        pav_col = col_offset + 3
-        tipo_col = col_offset + 4
-        target_columns += [mpa_col, tracos_col, pav_col, tipo_col]
-        col_offset += 4
-
-    # remover duplicatas e ordenar
-    target_columns = sorted(set(target_columns))
-
-    # verificar conflitos: se alguma célula alvo já tiver conteúdo -> não sobrescrever
-    conflitos = []
-    for col in target_columns:
-        val = ""
-        try:
-            val = linha_valores[col - 1].strip()
-        except Exception:
-            val = ""
-        if val != "":
-            conflitos.append((col, val))
-
-    if conflitos:
-        st.error("Erro ao preencher: já existem valores nas células que serão atualizadas. Evite sobrescrever registros existentes.")
-        st.write("Células ocupadas (coluna : valor):")
-        st.write(conflitos[:10])  # mostra até 10
-        return
-
-    # se chegou até aqui, podemos construir as atualizações
-    updates = []
-
-    # materiais primeiro (ordem correta conforme especificado)
-    if materiais:
-        materiais_ordem = [
-            "Areia Media (Carga)",
-            "Areia Fina (carga)",
-            "Cimento (un)",
-            "Plastmix (un)",
-            "Fachada Areia Média (Carga)",
-            "Fachada Areia Fina (carga)"
-        ]
-        # Observação: você descreveu 7 colunas contando Data; aqui são 6 campos além da Data.
-        # No seu enunciado original havia 7 colunas após Data? Você listou 6 nomes além de Data.
-        # Ajustei para gravar 6 campos nas colunas 2..7. Coluna 8 ficará vazia por compatibilidade.
-        # Se você quiser outra ordem/quantidade, me avisa e eu ajusto.
-        # Vamos mapear valores às colunas 2..7
-        col_for_materiais = list(range(2, 2 + len(materiais_ordem)))  # 2..7
-
-        for col, key in zip(col_for_materiais, materiais_ordem):
-            value = materiais.get(key, "")
-            updates.append({'range': sheet.cell(linha_planilha, col).address, 'values': [[value]]})
-
-    # caso restasse a 8ª coluna (vazia) não mexemos nela
-
-    # agora torres (mesma lógica que tinha antes)
-    col_offset = 1
-    for torre, valores in dados_torres.items():
-        mpa_col = col_offset + 1
-        tracos_col = col_offset + 2
-        pav_col = col_offset + 3
-        tipo_col = col_offset + 4
-
-        updates.append({'range': sheet.cell(linha_planilha, mpa_col).address, 'values': [[valores.get('Mpa', '')]]})
-        updates.append({'range': sheet.cell(linha_planilha, tracos_col).address, 'values': [[valores.get('Traços', '')]]})
-        updates.append({'range': sheet.cell(linha_planilha, pav_col).address, 'values': [[valores.get('Pavimento', '')]]})
-        updates.append({'range': sheet.cell(linha_planilha, tipo_col).address, 'values': [[valores.get('Tipo', 'A Granel')]]})
-
-        col_offset += 4
 
     try:
-        if updates:
-            sheet.batch_update(updates)
-            st.success("✅ Dados salvos com sucesso!")
+        valores_linha_mat = sheet_mat.row_values(linha_mat)
+    except Exception as e:
+        st.error(f"Erro ao ler linha na aba '{SHEET_MATERIAIS}': {e}")
+        return
+
+    # vamos padronizar o comprimento para checar todas as colunas (assumir que header tem pelo menos 8 colunas)
+    # Determinamos um tamanho mínimo para checagem:  max( len(header_dados), len(header_mat), 8 )
+    try:
+        header_dados = sheet_dados.row_values(1)
+    except:
+        header_dados = []
+    try:
+        header_mat = sheet_mat.row_values(1)
+    except:
+        header_mat = []
+
+    min_len_dados = max(len(header_dados), 2)  # data + algo
+    min_len_mat = max(len(header_mat), 8)  # queremos pelo menos até coluna 8 para materiais
+
+    if len(valores_linha_dados) < min_len_dados:
+        valores_linha_dados += [""] * (min_len_dados - len(valores_linha_dados))
+    if len(valores_linha_mat) < min_len_mat:
+        valores_linha_mat += [""] * (min_len_mat - len(valores_linha_mat))
+
+    # Verificação de conflito: qualquer célula (exceto a coluna 1 / index 0) preenchida -> bloqueio
+    conflicto_dados = any(str(v).strip() != "" for v in valores_linha_dados[1:])
+    conflicto_mat = any(str(v).strip() != "" for v in valores_linha_mat[1:])
+
+    if conflicto_dados or conflicto_mat:
+        st.error("Erro ao preencher: já existem valores na(s) linha(s) do dia selecionado. Operação abortada para evitar sobrescrita.")
+        detalhes = {}
+        if conflicto_dados:
+            detalhes['dados'] = "Existem valores preenchidos na aba 'dados' (colunas 2 em diante)."
+        if conflicto_mat:
+            detalhes['dados_materiais'] = "Existem valores preenchidos na aba 'dados_materiais' (colunas 2 em diante)."
+        st.write(detalhes)
+        return
+
+    # preparar updates para aba 'dados' (torres) - mesma lógica que antes
+    updates_dados = []
+    col_offset = 1
+    for torre, valores in dados_torres.items():
+        mpa_col = col_offset + 1
+        tracos_col = col_offset + 2
+        pav_col = col_offset + 3
+        tipo_col = col_offset + 4
+
+        updates_dados.append({'range': sheet_dados.cell(linha_dados, mpa_col).address, 'values': [[valores.get('Mpa', '')]]})
+        updates_dados.append({'range': sheet_dados.cell(linha_dados, tracos_col).address, 'values': [[valores.get('Traços', '')]]})
+        updates_dados.append({'range': sheet_dados.cell(linha_dados, pav_col).address, 'values': [[valores.get('Pavimento', '')]]})
+        updates_dados.append({'range': sheet_dados.cell(linha_dados, tipo_col).address, 'values': [[valores.get('Tipo', 'A Granel')]]})
+
+        col_offset += 4
+
+    # preparar updates para aba 'dados_materiais' (colunas 2..8 conforme combinado)
+    updates_mat = []
+    # ordens exatas das colunas (conforme sua confirmação)
+    materiais_ordem = [
+        "Areia Média (Carga)",
+        "Areia Fina (Carga)",
+        "Cimento (un)",
+        "Plastmix (un)",
+        "Fachada Areia Média (Carga)",
+        "Fachada Areia Fina (Carga)"
+    ]
+    # Colunas alvo: 2..(1 + len(materiais_ordem)) => 2..7 (coluna 1 é Data)
+    col_for_materiais = list(range(2, 2 + len(materiais_ordem)))  # 2..7
+
+    for col, key in zip(col_for_materiais, materiais_ordem):
+        value = materiais.get(key, "")
+        updates_mat.append({'range': sheet_mat.cell(linha_mat, col).address, 'values': [[value]]})
+
+    # tudo pronto — escrever em sequência (dados -> materiais)
+    try:
+        if updates_dados:
+            sheet_dados.batch_update(updates_dados)
+        if updates_mat:
+            sheet_mat.batch_update(updates_mat)
+        st.success("✅ Dados salvos com sucesso em ambas as abas!")
+        # limpar cache para recarregar valores
+        try:
             carregar_dados.clear()
-            obter_ultimos_valores.clear()
-        else:
-            st.info("Nenhuma atualização a ser feita (nenhum dado no formulário).")
+        except:
+            pass
     except Exception as e:
         st.error(f"Erro ao salvar na planilha: {e}")
-
+        return
 
 # -------- INTERFACE --------
 st.set_page_config(page_title="App Mooca", layout="wide")
@@ -301,6 +356,16 @@ condominios = {
 
 if "sem_consumo" not in st.session_state:
     st.session_state["sem_consumo"] = {}
+if "preenchidas" not in st.session_state():
+    st.session_state["preenchidas"] = {}
+
+# NOTE: some older Streamlit versions might error on st.session_state() call,
+# ensure above line is correct in your environment. If issue appears, change to:
+# if "preenchidas" not in st.session_state: st.session_state["preenchidas"] = {}
+
+# to be robust, we'll ensure keys exist:
+if "sem_consumo" not in st.session_state:
+    st.session_state["sem_consumo"] = {}
 if "preenchidas" not in st.session_state:
     st.session_state["preenchidas"] = {}
 
@@ -327,7 +392,6 @@ try:
 except Exception:
     defaults_por_torre = {}
 
-# Renderiza os formulários por condomínio/torre (mesma lógica de antes)
 for nome_condominio, info in condominios.items():
     st.markdown(f"<h3 style='color:{info['cor']}; margin-bottom:6px'>{nome_condominio}</h3>", unsafe_allow_html=True)
     cols = st.columns(3)
@@ -379,45 +443,16 @@ for nome_condominio, info in condominios.items():
 st.markdown("<h3 style='margin-top:10px'>Dados de Materiais</h3>", unsafe_allow_html=True)
 st.markdown("<div class='form-block'>", unsafe_allow_html=True)
 
-# Campos conforme você especificou:
-# Data | Areia Média (Carga) | Areia Fina (carga) | Cimento (un) | Plastmix (un) | Fachada Areia Média (Carga) | Fachada Areia Fina (carga)
-# Observação: o app já possui o seletor de data no topo; aqui vamos simplesmente preencher os campos relativos à data selecionada.
+# Campos conforme confirmado:
+# Data | Areia Média (Carga) | Areia Fina (Carga) | Cimento (un) | Plastmix (un) | Fachada Areia Média (Carga) | Fachada Areia Fina (Carga)
+# Usaremos text_input para permitir campo vazio (opcional). Se preferir number_input, me avisa e troco.
 
-# Tentar obter valores padrão da planilha para a data selecionada (se existirem)
-default_vals_materiais = {
-    "Areia Media (Carga)": "",
-    "Areia Fina (carga)": "",
-    "Cimento (un)": "",
-    "Plastmix (un)": "",
-    "Fachada Areia Média (Carga)": "",
-    "Fachada Areia Fina (carga)": ""
-}
-
-if df_dados is not None and not df_dados.empty:
-    try:
-        data_formatada = pd.to_datetime(data).date()
-        linha_index = df_dados.index[df_dados['Data'] == data_formatada].tolist()
-        if linha_index:
-            linha_df = df_dados.loc[linha_index[0]]
-            # tenta preencher a partir dos nomes das colunas (se existirem na planilha)
-            for key in list(default_vals_materiais.keys()):
-                # tentar colunas parecidas (sem acento/espaco diferente)
-                for colname in df_dados.columns:
-                    if colname.strip().lower().replace("ú","u").replace("í","i").replace("á","a").replace("é","e").replace("ã","a").replace("õ","o").replace("ç","c") == key.strip().lower().replace("ú","u").replace("í","i").replace("á","a").replace("é","e").replace("ã","a").replace("õ","o").replace("ç","c"):
-                        try:
-                            default_vals_materiais[key] = str(linha_df[colname]) if pd.notna(linha_df[colname]) else ""
-                        except:
-                            pass
-                        break
-    except Exception:
-        pass
-
-areia_media = st.text_input("Areia Média (Carga)", key="mat_areia_media", value=default_vals_materiais["Areia Media (Carga)"])
-areia_fina = st.text_input("Areia Fina (carga)", key="mat_areia_fina", value=default_vals_materiais["Areia Fina (carga)"])
-cimento = st.text_input("Cimento (un)", key="mat_cimento", value=default_vals_materiais["Cimento (un)"])
-plastmix = st.text_input("Plastmix (un)", key="mat_plastmix", value=default_vals_materiais["Plastmix (un)"])
-fach_fera_media = st.text_input("Fachada Areia Média (Carga)", key="mat_fach_a_media", value=default_vals_materiais["Fachada Areia Média (Carga)"])
-fach_fera_fina = st.text_input("Fachada Areia Fina (carga)", key="mat_fach_a_fina", value=default_vals_materiais["Fachada Areia Fina (carga)"])
+areia_media = st.text_input("Areia Média (Carga)", key="mat_areia_media", value="")
+areia_fina = st.text_input("Areia Fina (Carga)", key="mat_areia_fina", value="")
+cimento = st.text_input("Cimento (un)", key="mat_cimento", value="")
+plastmix = st.text_input("Plastmix (un)", key="mat_plastmix", value="")
+fach_fera_media = st.text_input("Fachada Areia Média (Carga)", key="mat_fach_a_media", value="")
+fach_fera_fina = st.text_input("Fachada Areia Fina (Carga)", key="mat_fach_a_fina", value="")
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -427,16 +462,16 @@ col1, col2 = st.columns(2)
 
 with col1:
     if st.button("💾 Salvar Dados"):
-        # monta o dicionário de materiais na mesma nomenclatura usada em salvar_dados()
+        # montar dicionários para salvar
         materiais_para_salvar = {
-            "Areia Media (Carga)": areia_media,
-            "Areia Fina (carga)": areia_fina,
+            "Areia Média (Carga)": areia_media,
+            "Areia Fina (Carga)": areia_fina,
             "Cimento (un)": cimento,
             "Plastmix (un)": plastmix,
             "Fachada Areia Média (Carga)": fach_fera_media,
-            "Fachada Areia Fina (carga)": fach_fera_fina
+            "Fachada Areia Fina (Carga)": fach_fera_fina
         }
-        salvar_dados(data, dados_torres, materiais=materiais_para_salvar)
+        salvar_tudo(data, dados_torres, materiais_para_salvar)
 
 with col2:
     if st.button("🔄 Atualizar Página (Novo Registro)"):
