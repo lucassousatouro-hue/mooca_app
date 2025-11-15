@@ -320,20 +320,20 @@ with col1:
         salvar_dados(data, dados_torres)
 with col2:
     if st.button("🔄 Atualizar Página (Novo Registro)"):
-        # limpa os campos da sessão para um novo registro
-        for torre in todas_torres:
-            for prefix in ("mpa_", "tracos_", "pav_", "tipo_"):
-                key = f"{prefix}{torre}"
-                if key in st.session_state:
-                    del st.session_state[key]
-        st.session_state["sem_consumo"] = {}
-        st.session_state["preenchidas"] = {}
-        # limpar cache de defaults para recarregar na próxima renderização
+        # Limpa TUDO do session_state
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+
+        # Limpa caches para garantir que defaults atualizem
         try:
+            carregar_dados.clear()
             obter_ultimos_valores.clear()
         except Exception:
             pass
-        st.rerun()
+
+        # Recarrega de verdade (igual F5)
+        st.experimental_rerun()
+
 
 # --- BARRA DE PROGRESSO ---
 total = len(todas_torres)
